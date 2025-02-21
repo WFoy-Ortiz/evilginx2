@@ -129,9 +129,9 @@ func (o *CertDb) generateCertificates() error {
 			Subject: pkix.Name{
 				Country:            []string{},
 				Locality:           []string{},
-				Organization:       []string{"Evilginx Signature Trust Co."},
+				Organization:       []string{""},
 				OrganizationalUnit: []string{},
-				CommonName:         "Evilginx Super-Evil Root CA",
+				CommonName:         "",
 			},
 			NotBefore:             notBefore,
 			NotAfter:              notAfter,
@@ -293,7 +293,7 @@ func (o *CertDb) getSelfSignedCertificate(host string, phish_host string, port i
 		template = x509.Certificate{
 			SerialNumber:          serialNumber,
 			Issuer:                x509ca.Subject,
-			Subject:               pkix.Name{Organization: []string{"Evilginx Signature Trust Co."}},
+			Subject:               pkix.Name{Organization: []string{""}},
 			NotBefore:             time.Now(),
 			NotAfter:              time.Now().Add(time.Hour * 24 * 180),
 			KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
