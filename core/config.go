@@ -89,8 +89,8 @@ type Config struct {
 	redirectorsDir  string
 	lures           []*Lure
 	lureIds         []string
-	subphishlets    []*SubPhishlet
-	cfg             *viper.Viper
+	//	subphishlets    []*SubPhishlet
+	cfg *viper.Viper
 }
 
 const (
@@ -401,7 +401,7 @@ func (c *Config) SetSiteEnabled(site string) error {
 		return fmt.Errorf("enabling phishlet '%s' requires its hostname to be set up", site)
 	}
 	if pl.isTemplate {
-		return fmt.Errorf("phishlet '%s' is a template - you have to 'create' child phishlet from it, with predefined parameters, before you can enable it.", site)
+		return fmt.Errorf("phishlet '%s' is a template - you have to 'create' child phishlet from it, with predefined parameters, before you can enable it", site)
 	}
 	c.PhishletConfig(site).Enabled = true
 	c.refreshActiveHostnames()
@@ -589,7 +589,7 @@ func (c *Config) DeleteSubPhishlet(site string) error {
 		return err
 	}
 	if pl.ParentName == "" {
-		return fmt.Errorf("phishlet '%s' can't be deleted - you can only delete child phishlets.", site)
+		return fmt.Errorf("phishlet '%s' can't be deleted - you can only delete child phishlets", site)
 	}
 
 	c.phishletNames = removeString(site, c.phishletNames)

