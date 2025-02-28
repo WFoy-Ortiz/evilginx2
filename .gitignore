@@ -1,5 +1,4 @@
 release/
 build/
 private/
-/phishlets
-!/phishlets/m365.yaml
+

